@@ -1,11 +1,15 @@
 # what_to_watch/opinions_app.py
+import csv
+import click
 
 from datetime import datetime
 from random import randrange
 
 # Добавлена функция render_template
-from flask import Flask, redirect, render_template, url_for
+from flask import Flask, redirect, render_template, url_for, flash, abort
 from flask_sqlalchemy import SQLAlchemy
+
+from flask_migrate import Migrate
 
 from flask_wtf import FlaskForm
 from wtforms import StringField, SubmitField, TextAreaField, URLField
@@ -18,6 +22,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = 'MY SECRET KEY'
 
 db = SQLAlchemy(app)
+migrate = Migrate(app,db)
 
 
 class Opinion(db.Model):
@@ -26,6 +31,7 @@ class Opinion(db.Model):
     text = db.Column(db.Text, unique=True, nullable=False)
     source = db.Column(db.String(256))
     timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    added_by = db.Column(db.String(64))
 
 class OpinionForm(FlaskForm):
     title = StringField(
@@ -48,7 +54,7 @@ class OpinionForm(FlaskForm):
 def index_view():
     quantity = Opinion.query.count()
     if not quantity:
-        return 'В базе данных мнений о фильмах нет.'
+        return abort(404)
     offset_value = randrange(quantity)
     opinion = Opinion.query.offset(offset_value).first()
     # Вот здесь в шаблон передаётся весь объект opinion
@@ -58,6 +64,12 @@ def index_view():
 def add_opinion_view():
     form = OpinionForm()
     if form.validate_on_submit():
+        text=form.text.data
+        if Opinion.query.filter_by(text=text).first() is not None:
+            # вызвать функцию flash и передать соответствующее сообщение
+            flash('Такое мнение уже было оставлено ранее!')
+            # и вернуть пользователя на страницу «Добавить новое мнение»
+            return render_template('add_opinion.html', form=form)
         opinion = Opinion(
             title=form.title.data,
             text=form.text.data,
@@ -75,6 +87,39 @@ def add_opinion_view():
 def opinion_view(id):
     opinion = Opinion.query.get_or_404(id)
     return render_template('opinion.html', opinion=opinion)
+
+
+@app.errorhandler(404)
+def page_not_found(error):
+    # В качестве ответа возвращается собственный шаблон
+    # и код ошибки
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    # В таких случаях можно откатить незафиксированные изменения в БД
+    db.session.rollback()
+    return render_template('500.html'), 500
+
+@app.cli.command('load_opinions')
+def load_opinions_command():
+    """Функция загрузки мнений в базу данных."""
+    # Открывается файл
+    with open('opinions.csv', encoding='utf-8') as f:
+        # Создаётся итерируемый объект, который отображает каждую строку
+        # в качестве словаря с ключами из шапки файла
+        reader = csv.DictReader(f)
+        # Для подсчёта строк добавляется счётчик
+        counter = 0
+        for row in reader:
+            # Распакованный словарь можно использовать
+            # для создания объекта мнения
+            opinion = Opinion(**row)
+            # Изменения нужно зафиксировать
+            db.session.add(opinion)
+            db.session.commit()
+            counter += 1
+    click.echo(f'Загружено мнений: {counter}')
 
 if __name__ == '__main__':
     app.run()
